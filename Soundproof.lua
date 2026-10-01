@@ -104,13 +104,11 @@ emu.registerafter(function()
         new_context = 0
         try_write_pipe(COMMAND_SET_TRACK, 1, 0)
     else
-        print("both 0!")
         try_write_pipe(COMMAND_SET_MUTE, 0, 0)
         return
     end
 
     if new_context and new_context ~= context then
-        print("Context is " .. new_context)
         context = new_context
         try_write_pipe(COMMAND_SET_PLAYER, context, 0)
         try_write_pipe(COMMAND_SET_MUTE, 0, 1)
