@@ -66,7 +66,7 @@ local last_target
 local last_value
 local failed = false
 
-local debug = true
+local debug = false
 local command_text = {
     [0] = "Pause",
     [1] = "Mute",
