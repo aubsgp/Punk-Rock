@@ -13,6 +13,7 @@ add_executable(
     PunkRock.cpp
     deps/ROM/ROM.cpp
     ${SSEQ_SOURCES}
+    resources.rc
 )
 
 set_target_properties(PunkRock PROPERTIES 

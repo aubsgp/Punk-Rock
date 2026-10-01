@@ -30,13 +30,14 @@ static uint32_t context = 0;
 static std::vector<std::array<int16_t, 2>> samples; // Each sample is 2 16-bit values
 static std::vector<uint8_t> sdat_bytes;
 static std::vector<std::string> seq_names;
+static PseudoFile pf;
 
 static std::mutex player_mutex;
 
 static HWND g_slider, g_label;
 static float g_volume = 0.5f; // The volume we set through the slider in the window.
 
-static bool paused;
+static std::array<uint32_t, 3> paused;
 static float fade = 1.0f;
 static uint32_t mute = 1;
 
@@ -75,9 +76,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 NULL,                             // hInstance
                 NULL                              // lpParam
             );
-
-            SendMessageW(g_slider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
-            SendMessageW(g_slider, TBM_SETPOS, TRUE, 50);
+            {
+                LPARAM icon = (LPARAM) LoadImageW(
+                    GetModuleHandle(NULL), // hInst
+                    L"IDI_PR_ICON",        // name
+                    IMAGE_ICON,            // type
+                    32,                    // cx
+                    32,                    // cy
+                    LR_SHARED              // fuLoad
+                );
+                SendMessageW(hwnd, WM_SETICON, ICON_BIG, icon);
+                SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icon);
+                SendMessageW(hwnd, WM_SETICON, ICON_SMALL2, icon);
+                SendMessageW(g_slider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+                SendMessageW(g_slider, TBM_SETPOS, TRUE, 50);
+            }
             return 0;
 
         case WM_HSCROLL:
@@ -151,10 +164,8 @@ int set_track(uint32_t sseq) // Caller must hold the mutex.
 {
     try
     {
-        track[context] = sseq;
-        PseudoFile pf;
-        pf.data = &sdat_bytes;
         pf.pos = 0;
+        track[context] = sseq;
 
         player[context].Stop(true);
         sdat[context] = std::make_unique<SDAT>(pf, track[context]);
@@ -175,7 +186,7 @@ void pipe_thread()
         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, // dwPipeMode
         1,                                                     // nMaxInstances
         0,                                                     // nOutBufferSize
-        sizeof(uint32_t) * 2,                                  // nInBufferSize
+        sizeof(uint32_t),                                      // nInBufferSize
         0,                                                     // nDefaultTimeOut
         NULL                                                   // lpSecurityAttributes (default security)
     );
@@ -186,51 +197,65 @@ void pipe_thread()
     }
     
     enum Command {
-        COMMAND_PAUSE,            // Legal values: 0 or 1
-        COMMAND_SET_MUTE,         // Legal values: 0 or 1
-        COMMAND_SET_FADE,         // Legal values: 0 to 128. Fixed-point, basically.
-        COMMAND_SET_TRACK_FIELD,  // Legal values: 0 to iirc 0x854. Some values in-between have no music.
-        COMMAND_SET_TRACK_BATTLE, // Legal values: 0 to iirc 0x854. Some values in-between have no music.
-        COMMAND_SET_PLAYER,       // Legal values: 0 (field) or 1 (battle). Switches without setting a track, so it'll resume any music that was playing.
-        COMMAND_CLOSE_PLAYER,     // Values do not matter. If this command is sent, close the program.
+        COMMAND_SET_PAUSE,    // Legal values: 0 or 1
+        COMMAND_SET_MUTE,     // Legal values: 0 or 1
+        COMMAND_SET_FADE,     // Legal values: 0 to 128. Fixed-point, basically.
+        COMMAND_SET_TRACK,    // Legal values: 0 to iirc 0x854. Some values in-between have no music.
+        COMMAND_SET_PLAYER,   // Legal values: 0 (field) or 1 (battle). Switches without setting a track, so it'll resume any music that was playing.
+        COMMAND_CLOSE_PLAYER, // Values do not matter. If this command is sent, close the program.
     };
-    std::array<uint32_t, 2> data; // 2 numbers: First, the command. Then, the associated value.
+    uint32_t data; // 1 byte for command | 1 byte for target (0 = field, 1 = bgm, 2 = global) | 2 bytes for value (for example, track num)
     DWORD read;
     while (true)
     {
         ConnectNamedPipe(pipe, NULL);
         while(ReadFile(pipe, &data, sizeof(data), &read, NULL) && read == sizeof(data))
         {
-            Command command = static_cast<Command>(data[0]);
-            uint32_t val = data[1];
+            Command command = static_cast<Command>(data >> 24);
+            uint8_t target = data >> 16;
+            uint16_t value = data; // Discards the command and target bytes.
             switch (command)
             {
-                case COMMAND_PAUSE:
-                    paused = (val == 1);
+                case COMMAND_SET_PAUSE:
+                    if (target > 2)
+                    {
+                        std::cerr << "bad target " << (int) target << " for command " << command << "\n"; 
+                        std::exit(-1);
+                    }
+                    paused[target] = value;
                     break;
 
                 case COMMAND_SET_MUTE:
-                    mute = val;
+                    mute = value;
                     break;
                 
                 case COMMAND_SET_FADE:
-                    fade = val / 128.0;
+                    fade = value / 128.0;
                     break;
                 
-                case COMMAND_SET_TRACK_FIELD:
-                case COMMAND_SET_TRACK_BATTLE:
-                    if(val < seq_names.size() && seq_names[val] != "")
+                case COMMAND_SET_TRACK:
+                    if (target > 1)
+                    {
+                        std::cerr << "bad target " << (int) target << " for command " << command << "\n"; 
+                        std::exit(-1);
+                    }
+                    if(value < seq_names.size() && seq_names[value] != "")
                     {
                         std::lock_guard<std::mutex> lock(player_mutex);
-                        context = command - COMMAND_SET_TRACK_FIELD;
-                        set_track(val);
+                        context = target;
+                        set_track(value);
                     }
                     break;
 
                 case COMMAND_SET_PLAYER:
+                if (target > 1)
+                    {
+                        std::cerr << "bad target " << (int) target << " for command " << command << "\n"; 
+                        std::exit(-1);
+                    }
                     {
                         std::lock_guard<std::mutex> lock(player_mutex);
-                        context = val;
+                        context = target;
                         if(track[context] < seq_names.size() && seq_names[track[context]] != "")
                         {
                             set_song_name(seq_names[track[context]]);
@@ -251,7 +276,7 @@ void pipe_thread()
 // The function we give to miniaudio for its thread.
 void audio_callback(ma_device *device, void *out, const void *in, ma_uint32 frames)
 {
-    if (paused)
+    if (paused[2] || paused[context])
     {
         std::memset(out, 0, frames * 4);
     }
@@ -321,6 +346,8 @@ int main()
     ROM rom(romPath);
     auto [sdat_start, sdat_end] = rom.GetFileAddr("data/sound/pl_sound_data.sdat");
     sdat_bytes = rom.Read8Range(sdat_start, sdat_end);
+    pf.data = &sdat_bytes;
+    pf.pos = 0;
     seq_names = rom.GetSEQList(sdat_start);
 
     // Setup the device for playback and set the sample rate.

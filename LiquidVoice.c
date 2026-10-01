@@ -63,9 +63,10 @@ static void luaL_register(lua_State *L, const char *name, const luaL_Reg *lib)
 static HANDLE pipe = INVALID_HANDLE_VALUE;
 static int write_pipe(lua_State *L)
 {
-    uint32_t to_write[2];
-    to_write[0] = luaL_checkinteger(L, 1);
-    to_write[1] = luaL_checkinteger(L, 2);
+    uint8_t command = luaL_checkinteger(L, 1);
+    uint8_t target  = luaL_checkinteger(L, 2); // 0 = player_field, 1 = player_bgm, 2 = global, i.e. "pause independently of which player is playing".
+    uint16_t value  = luaL_checkinteger(L, 3);
+    uint32_t to_write = command << 24 | target << 16 | value;
 
     if (pipe == INVALID_HANDLE_VALUE)
     {
@@ -87,7 +88,7 @@ static int write_pipe(lua_State *L)
     else
     {    
         DWORD written;
-        if (!WriteFile(pipe, to_write, sizeof(to_write), &written, NULL))
+        if (!WriteFile(pipe, &to_write, sizeof(to_write), &written, NULL))
         {
             CloseHandle(pipe);
             pipe = INVALID_HANDLE_VALUE;
@@ -102,13 +103,13 @@ static int write_pipe(lua_State *L)
     return 1;
 }
 
-static const luaL_Reg secretarylib[] = {
+static const luaL_Reg liquidVoiceLib[] = {
     {"write_pipe", write_pipe},
     {NULL, NULL}
 };
 
 __declspec(dllexport) int luaopen_LiquidVoice(lua_State *L)
 {
-    luaL_register(L, "secretary", secretarylib);
+    luaL_register(L, "liquidVoice", liquidVoiceLib);
     return 1;
 }
