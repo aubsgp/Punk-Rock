@@ -66,7 +66,7 @@ local last_target
 local last_value
 local failed = false
 
-local debug = false
+local debug = true
 local command_text = {
     [0] = "Pause",
     [1] = "Mute",
@@ -85,6 +85,12 @@ local try_write_pipe = function(command, target, value) -- A version of write_pi
     return lv.write_pipe(command, target, value)
 end
 
+failed = not try_write_pipe(COMMAND_SET_PAUSE, 0, 0)
+if failed then
+    print("Communication failed!")
+    print("If PunkRock.exe is not open, please open it.")
+end
+
 emu.registerafter(function()
     MemNode:clear_cache()
     sPlayer_volume[0]:writeword(0)
@@ -94,6 +100,8 @@ emu.registerafter(function()
         failed = not try_write_pipe(last_command, last_target, last_value)
         if not failed then
             print("Communication succeeded!")
+        else
+            return
         end
     end
 
@@ -102,16 +110,20 @@ emu.registerafter(function()
         new_context = 1
     elseif sPlayer_count[0]:readbyte() == 1 then
         new_context = 0
-        try_write_pipe(COMMAND_SET_TRACK, 1, 0)
+        track[1] = 0
     else
+        muted = true
         try_write_pipe(COMMAND_SET_MUTE, 0, 0)
         return
     end
 
-    if new_context and new_context ~= context then
+    if muted then
+        muted = false
+        try_write_pipe(COMMAND_SET_MUTE, 0, 1)
+    end
+    if new_context ~= context then
         context = new_context
         try_write_pipe(COMMAND_SET_PLAYER, context, 0)
-        try_write_pipe(COMMAND_SET_MUTE, 0, 1)
     end
 
     fade_read = sSoundSystem_fadeCounter:readbyte()
@@ -133,22 +145,17 @@ emu.registerafter(function()
         end
         try_write_pipe(COMMAND_SET_FADE, 0, fade_val)
     else
-        if not fade_in_next and fade_val ~= 128 then
-            fade_val = 128
-            try_write_pipe(COMMAND_SET_FADE, 0, fade_val)
-        end
         fade = 0
     end
 
     local curr_track = sSoundSystem_currentBGM:readword()
     if track[context] ~= curr_track and curr_track ~= 0 then
         track[context] = curr_track
-        failed = not try_write_pipe(COMMAND_SET_TRACK, context, curr_track)
-        if failed then
-            print("Communication failed!")
-            print("If PunkRock.exe is not open, please open it.")
-            return
+        if not fade_in_next and fade_val ~= 128 then
+            fade_val = 128
+            try_write_pipe(COMMAND_SET_FADE, 0, 128)
         end
+        try_write_pipe(COMMAND_SET_TRACK, context, curr_track)
     end
 
     local keys = input.get()
@@ -183,8 +190,10 @@ gui.register(function()
         end
     end
 
-    pcall(function() gui.text(0, 15, sPlayer_count[0]:readbyte()) end)
-    pcall(function() gui.text(0, 30, sPlayer_count[1]:readbyte()) end)
+    if debug then
+        pcall(function() gui.text(0, 15, sPlayer_count[0]:readbyte()) end)
+        pcall(function() gui.text(0, 30, sPlayer_count[1]:readbyte()) end)
+    end
 end)
 
 emu.registerexit(function()
