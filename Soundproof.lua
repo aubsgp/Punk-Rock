@@ -4,6 +4,8 @@ local lv = require("LiquidVoice")
 local Mem = require("Mem")
 local MemNode = Mem.MemNode
 
+local MAX_VOLUME = 128
+local volume = 0
 local muted = false
 local paused = 0
 local bgm_paused = {
@@ -17,17 +19,12 @@ local track = {
 }
 
 local context = 0
-local fade_in_next = false
 
 -- https://github.com/pret/pokeplatinum/blob/main/include/sound_system.h
 local sSoundSystem = MemNode:root(0x02101df8) -- Base address, fixed position. If you're adapting this code for HGSS or DP, this is what you change.
-local sSoundSystem_fadeCounter    = sSoundSystem:child({0xbcd00}) -- offset by 0xbcd00
 local sSoundSystem_currentBGM     = sSoundSystem:child({0xbcd0c}) -- offset by 0xbcd0c
 local sSoundSystem_fieldBGMPaused = sSoundSystem:child({0xbcd10}) -- offset by 0xbcd10
 local sSoundSystem_bgmPaused      = sSoundSystem:child({0xbcd11}) -- offset by 0xbcd11
-local fade = 0 -- Negative = fading in. Positive = fading out. Denominator = |fade|. See code below.
-local fade_read = 0
-local fade_val = 0 -- Numerator of fade.
 
 -- https://github.com/ntrtwl/NitroSystem/blob/main/include/nnsys/snd/player.h
 -- https://github.com/ntrtwl/NitroSystem/blob/main/libraries/snd/src/player.c
@@ -45,18 +42,23 @@ local sPlayer_volume = {
     [0] = sPlayer[0]:child({0x20}), -- offset by 0x20
     [1] = sPlayer[1]:child({0x20})  -- offset by 0x20
 }
+
 local SeqPlayer = {
-    [0] = sPlayer[0]:child({0, -0x0c}), -- deref, then offset by -0x0c
-    [1] = sPlayer[1]:child({0, -0x0c})  -- deref, then offset by -0x0c
+    [0] = sPlayer[0]:child({0}), -- deref
+    [1] = sPlayer[1]:child({0})  -- deref
 }
 local SeqPlayer_pauseFlag = {
     [0] = SeqPlayer[0]:child({0x2e}), -- offset by 0x2e
     [1] = SeqPlayer[1]:child({0x2e})  -- offset by 0x2e
 }
+local SeqPlayer_volume = {
+    [0] = SeqPlayer[0]:child({0x3e}), -- offset by 0x3e
+    [1] = SeqPlayer[1]:child({0x3e})  -- offset by 0x3e
+}
 
-local COMMAND_SET_PAUSE    = 0 -- Legal values: 0 or 1
-local COMMAND_SET_MUTE     = 1 -- Legal values: 0 or 1
-local COMMAND_SET_FADE     = 2 -- Legal values: 0 to 128. Fixed-point, basically.
+local COMMAND_SET_PAUSE    = 0 -- Legal values: 0 or 1. 0 = play, 1 = pause.
+local COMMAND_SET_MUTE     = 1 -- Legal values: 0 or 1. 0 = mute, 1 = unmuted.
+local COMMAND_SET_FADE     = 2 -- Legal values: 0 to 128. Fixed-point volume setting with a denominator of 128, basically.
 local COMMAND_SET_TRACK    = 3 -- Legal values: 0 to iirc 0x854. Some values in-between have no music.
 local COMMAND_SET_PLAYER   = 4 -- Values do not matter.
 local COMMAND_CLOSE_PLAYER = 5 -- Values do not matter. If this command is sent, close the program.
@@ -85,6 +87,23 @@ local try_write_pipe = function(command, target, value) -- A version of write_pi
     return lv.write_pipe(command, target, value)
 end
 
+-- The SeqPlayers store the volume in decibels, or I suppose more accurately signed centibels. So, for instance, 0xfff0 = -1.6 decibels.
+-- https://en.wikipedia.org/wiki/Decibel
+-- https://github.com/ntrtwl/NitroSystem/blob/main/libraries/snd/src/player.c#L639
+-- https://github.com/ntrtwl/NitroSDK/blob/main/include/nitro/snd/common/util.h#L43
+-- https://github.com/ntrtwl/NitroSDK/blob/main/libraries/snd/src/snd_util.c#L206
+local cB_to_amplitude = function(cB_read) -- 0 dB is "full volume". cB = "centibels"
+    local cB = cB_read + 421 -- Because we set the sPlayer volume to 0x01, rather than its usual 0x7f, the value the game computes is 421 below what it normally is. We manually correct for that here.
+    if cB >= 0x8000 then
+        cB = cB - 0x10000 -- The value the game tracks is signed.
+    end
+    if (cB > 0) then
+        return 0 -- Volume seems to un-suppress briefly when switching tracks. We just go ahead and keep that from blowing the player's ears out.
+    end
+    local exponent = (1/200) * cB
+    return math.floor(MAX_VOLUME * (10 ^ exponent))
+end
+
 failed = not try_write_pipe(COMMAND_SET_PAUSE, 0, 0)
 if failed then
     print("Communication failed!")
@@ -93,8 +112,8 @@ end
 
 emu.registerafter(function()
     MemNode:clear_cache()
-    sPlayer_volume[0]:writeword(0)
-    sPlayer_volume[1]:writeword(0)
+    sPlayer_volume[0]:writebyte(0x01) -- We can't use 0, or else the game will stop computing cB values for the SeqPlayers. But 1 is inaudible, anyway.
+    sPlayer_volume[1]:writebyte(0x01)
 
     if failed then
         failed = not try_write_pipe(last_command, last_target, last_value)
@@ -112,8 +131,12 @@ emu.registerafter(function()
         new_context = 0
         track[1] = 0
     else
-        muted = true
-        try_write_pipe(COMMAND_SET_MUTE, 0, 0)
+        if not muted then
+            muted = true
+            try_write_pipe(COMMAND_SET_MUTE, 0, 0)
+            track[0] = 0
+            track[1] = 0
+        end
         return
     end
 
@@ -126,35 +149,15 @@ emu.registerafter(function()
         try_write_pipe(COMMAND_SET_PLAYER, context, 0)
     end
 
-    fade_read = sSoundSystem_fadeCounter:readbyte()
-    if fade_read ~= 0 and fade == 0 then
-        if fade_in_next then
-            fade_in_next = false
-            fade = -fade_read -- fade in
-        elseif (context == 1) then
-            fade_in_next = true
-            fade = fade_read  -- fade out
-        else
-            fade = fade_read  -- fade out
-        end
-    elseif fade_read ~= 0 and fade ~= 0 then
-        if fade > 0 then
-            fade_val = math.floor(128 * fade_read / fade)
-        else
-            fade_val = math.floor(128 * (fade_read + fade) / fade)
-        end
-        try_write_pipe(COMMAND_SET_FADE, 0, fade_val)
-    else
-        fade = 0
+    local volume_read = cB_to_amplitude(SeqPlayer_volume[context]:readword())
+    if volume_read ~= volume then
+        volume = volume_read
+        try_write_pipe(COMMAND_SET_FADE, context, volume)
     end
 
     local curr_track = sSoundSystem_currentBGM:readword()
     if track[context] ~= curr_track and curr_track ~= 0 then
         track[context] = curr_track
-        if not fade_in_next and fade_val ~= 128 then
-            fade_val = 128
-            try_write_pipe(COMMAND_SET_FADE, 0, 128)
-        end
         try_write_pipe(COMMAND_SET_TRACK, context, curr_track)
     end
 
@@ -192,12 +195,15 @@ gui.register(function()
 
     if debug then
         pcall(function() gui.text(0, 15, sPlayer_count[0]:readbyte()) end)
+        pcall(function() gui.text(50, 15, string.format("-0x%x", 0x10000 - SeqPlayer_volume[0]:readword() - 421)) end)
+
         pcall(function() gui.text(0, 30, sPlayer_count[1]:readbyte()) end)
+        pcall(function() gui.text(50, 30, string.format("-0x%x", 0x10000 - SeqPlayer_volume[1]:readword() - 421)) end)
     end
 end)
 
 emu.registerexit(function()
-    sPlayer_volume[0]:writeword(0x7f)
-    sPlayer_volume[1]:writeword(0x7f)
+    --sPlayer_volume[0]:writebyte(0x7f)
+    --sPlayer_volume[1]:writebyte(0x7f)
     lv.write_pipe(COMMAND_CLOSE_PLAYER, 0, 0)
 end)
