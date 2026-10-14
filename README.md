@@ -1,6 +1,6 @@
 HOW TO INSTALL:
 1) Go [here](https://github.com/aubsgp/Punk-Rock/releases) for releases. <br>
-2) Extract the contents into your Desmume folder. "lua51.dll" should sit next to your emulator. <br>
+2) Extract the contents of the .zip into your Desmume folder. "lua51.dll" should sit next to your emulator. <br>
 (If you already have a copy of lua51.dll from installing another lua script, this is fine, and you do not need to overwrite it.)
 
 HOW TO USE: <br>
