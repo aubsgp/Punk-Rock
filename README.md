@@ -43,6 +43,10 @@ FAQ
 
     A: Unfortunately, almost none of this project would be reusable towards 3DS games, which have a different filesystem, a different sound architecture, and run on different emulators. I have no intention of supporting them at this time, and I would expect others to get little of value from this project in trying to do so themselves.
 
+- Q: I have an issue not listed on this page, what do I do?
+
+    A: Feel free to ping me in the PK channel of Jan's discord. I may not see it immediately, but I'm happy to answer any questions and receptive to hearing about any bugs. You can also create an issue on this repo, if you have specifically found a bug.
+
 License
 ========
 [MIT No Attribution](https://github.com/aws/mit-0)
