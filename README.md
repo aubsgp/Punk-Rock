@@ -14,6 +14,8 @@ Controls
 ========
 You can toggle the music with Backspace. If you want to change which key is used, you can do so by editing the Soundproof.lua file: ctrl+f "backspace", then replace it with whichever key you like. A list of keys may be found [here](https://github.com/TASEmulators/desmume/blob/master/desmume/src/lua-engine.cpp#L4065).
 
+<b>VERY IMPORTANT</b>: Bear in mind that you cannot use normal Desmume speedup while running ANY persistent Lua script. The reason for this is that Desmume's speedup doesn't just uncap the framerate, it also tells the emulator to skip rendering most of the frames -- unfortunately, this causes unplayable stuttering for most Lua scripts, which run on a frame-by-frame basis. If you want to have speedup while running any lua script, you must instead use - or = to adjust your framerate target, or else set up a hotkey to toggle limiting framerate. This will give you the same sped-up gameplay, without breaking this or any other lua scripts you're using.
+
 Dependencies
 ========
 https://github.com/kode54/SSEQPlayer: Used in PunkRock.exe to generate the samples for the music extracted from the .nds file. <br>
